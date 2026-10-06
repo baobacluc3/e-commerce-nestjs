@@ -1,0 +1,32 @@
+generator client {
+  provider = "prisma-client"
+  output = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+    id String @id @default(uuid())
+    email String @unique
+    passwordHash String
+    createdAt DateTime @default(now())
+
+    sessions AuthSession[]
+}
+
+model AuthSession {
+    id String @id @default(uuid())
+    userId String
+    refreshTokenHash String
+    expiresAt DateTime
+    createdAt DateTime @default(now())
+    
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@index([userId])
+    @@index([expiresAt])
+}
+
