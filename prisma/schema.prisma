@@ -8,13 +8,62 @@ datasource db {
   provider = "postgresql"
 }
 
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+/*
+ ACTIVE — The customer reserves the phone. The system temporarily holds it for them.
+COMMITTED — The customer pays successfully. The reservation becomes a confirmed purchase.
+RELEASED — The customer cancels the reservation. The phone becomes available to other customers.
+EXPIRED — The customer does not complete checkout before the time limit. The reservation ends, and the phone becomes available again.
+*/
+enum ReservationStatus {
+  ACTIVE
+  COMMITTED
+  RELEASED
+  EXPIRED
+}
+
+enum MovementType {
+  INITIAL
+  ADJUSTMENT
+  COMMIT
+}
+
 model User {
     id String @id @default(uuid())
     email String @unique
     passwordHash String
+    role         Role     @default(CUSTOMER)
     createdAt DateTime @default(now())
 
     sessions AuthSession[]
+    reservations Reservation[]
+}
+
+model InventoryItem {
+  productId String   @id
+  onHand    Int      @default(0)
+  reserved  Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+
+model StockMovement {
+  id             String       @id @default(uuid())
+  productId      String
+  type           MovementType
+  delta          Int
+  reason         String?
+  actorId        String?
+  idempotencyKey String?      @unique
+  createdAt      DateTime     @default(now())
+
+  @@index([productId, createdAt])
 }
 
 model AuthSession {
@@ -23,6 +72,9 @@ model AuthSession {
     refreshTokenHash String
     expiresAt DateTime
     createdAt DateTime @default(now())
+    revokedAt DateTime?
+    userAgent String?
+    ip String?
     
     user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -30,3 +82,27 @@ model AuthSession {
     @@index([expiresAt])
 }
 
+model Reservation {
+  id             String            @id @default(uuid())
+  userId         String
+  idempotencyKey String
+  status         ReservationStatus @default(ACTIVE)
+  expiresAt      DateTime
+  createdAt      DateTime          @default(now())
+
+  user  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items ReservationItem[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([status, expiresAt])
+}
+
+model ReservationItem {
+  reservationId String
+  productId     String
+  quantity      Int
+
+  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@id([reservationId, productId])
+}

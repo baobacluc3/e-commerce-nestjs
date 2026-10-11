@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '../generated/prisma/client';
 
 export interface CreateUserInput {
   email: string;
@@ -8,7 +9,7 @@ export interface CreateUserInput {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   async findByEmail(email: string) {
     return this.prisma.user.findUnique({
@@ -24,17 +25,28 @@ export class UsersService {
   }
 
   async createUser(input: CreateUserInput) {
-    return this.prisma.user.create({
-      data: {
-        email: input.email,
-        passwordHash: input.passwordHash,
-      },
-      select: {
-        id: true,
-        email: true,
-        createdAt: true,
-      },
-    });
+    try {
+      return await this.prisma.user.create({
+        data: {
+          email: input.email,
+          passwordHash: input.passwordHash,
+        },
+        select: {
+          id: true,
+          email: true,
+          createdAt: true,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('Email already exists');
+      }
+
+      throw error;
+    }
   }
 
   async findCredentialsByEmail(email: string) {
