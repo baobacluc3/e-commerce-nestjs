@@ -9,5 +9,10 @@
  * 🟢 You can import this file directly.
  */
 export type * from './models/User.js'
+export type * from './models/Product.js'
+export type * from './models/InventoryItem.js'
+export type * from './models/StockMovement.js'
 export type * from './models/AuthSession.js'
+export type * from './models/Reservation.js'
+export type * from './models/ReservationItem.js'
 export type * from './commonInputTypes.js'

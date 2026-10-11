@@ -43,6 +43,16 @@ model User {
     reservations Reservation[]
 }
 
+model Product {
+  id        String   @id @default(uuid())
+  sku       String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventory InventoryItem?
+}
+
 model InventoryItem {
   productId String   @id
   onHand    Int      @default(0)

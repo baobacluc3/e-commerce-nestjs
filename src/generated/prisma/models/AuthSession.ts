@@ -429,10 +429,6 @@ export type NullableDateTimeFieldUpdateOperationsInput = {
   set?: Date | string | null
 }
 
-export type NullableStringFieldUpdateOperationsInput = {
-  set?: string | null
-}
-
 export type AuthSessionCreateWithoutUserInput = {
   id?: string
   refreshTokenHash: string
