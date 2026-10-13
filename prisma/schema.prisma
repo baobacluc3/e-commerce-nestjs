@@ -38,42 +38,36 @@ model User {
     passwordHash String
     role         Role     @default(CUSTOMER)
     createdAt DateTime @default(now())
-
     sessions AuthSession[]
     reservations Reservation[]
 }
 
 model Product {
   id        String   @id @default(uuid())
-  sku       String   @unique
+  sku       String   @unique    //(Stock Keeping Unit) is a unique code used to identify a product in inventory.
   name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
   inventory InventoryItem?
 }
 
 model InventoryItem {
   productId String   @id
-  onHand    Int      @default(0)
-  reserved  Int      @default(0)
-  updatedAt DateTime @updatedAt
-
-  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  onHand    Int      @default(0)  // The total quantity of a product physically in stock.
+  reserved  Int      @default(0)  // The quantity set aside for orders but not yet shipped.
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)  //InventoryItem.productId as the foreign key.
 }
 
+//Example: A product has 50 items, and you add 10. The system updates InventoryItem.onHand to 60 and records a StockMovement with delta = 10 and reason = "Restock".
+//InventoryItem stores the current stock totals; StockMovement stores the history of changes.
 
 model StockMovement {
-  id             String       @id @default(uuid())
+  id             String       @id @default(uuid())  // Unique ID for the stock movement, generated as a UUID.
   productId      String
-  type           MovementType
-  delta          Int
-  reason         String?
-  actorId        String?
-  idempotencyKey String?      @unique
-  createdAt      DateTime     @default(now())
-
-  @@index([productId, createdAt])
+  type           MovementType  //Category of movement, defined by the MovementType enum (for example, IN, OUT, or ADJUSTMENT).
+  delta          Int          // Quantity changed. Positive means stock increases; negative means stock decreases.
+  reason         String?      // Optional explanation, such as "Restock" or "Damaged items".
+  actorId        String?      //Optional ID of the user who made the change.
+  idempotencyKey String?      @unique   // Optional unique key that prevents the same operation from being processed more than once.
+  @@index([productId, createdAt])  //- Improves queries that retrieve a product’s stock movements ordered or filtered by creation time.
 }
 
 model AuthSession {
@@ -81,13 +75,10 @@ model AuthSession {
     userId String
     refreshTokenHash String
     expiresAt DateTime
-    createdAt DateTime @default(now())
     revokedAt DateTime?
     userAgent String?
     ip String?
-    
     user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
     @@index([userId])
     @@index([expiresAt])
 }
@@ -95,24 +86,19 @@ model AuthSession {
 model Reservation {
   id             String            @id @default(uuid())
   userId         String
-  idempotencyKey String
+  idempotencyKey String     //A key used to prevent duplicate reservations from the same request.
   status         ReservationStatus @default(ACTIVE)
   expiresAt      DateTime
-  createdAt      DateTime          @default(now())
-
   user  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  items ReservationItem[]
-
-  @@unique([userId, idempotencyKey])
-  @@index([status, expiresAt])
+  items ReservationItem[]    //The list of items included in this reservation.
+  @@unique([userId, idempotencyKey])   //Prevents the same user from creating duplicate reservations with the same key.
+  @@index([status, expiresAt])     //Speeds up queries for reservations by status and expiration time, such as finding expired active reservations.
 }
 
 model ReservationItem {
   reservationId String
   productId     String
   quantity      Int
-
   reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
-
   @@id([reservationId, productId])
 }

@@ -1,124 +1,172 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# E-commerce API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A REST API built with NestJS, TypeScript, PostgreSQL, and Prisma. The current application provides customer registration and sign-in, refreshable sessions, and inventory operations for products and time-limited stock reservations. It is a backend foundation; it does not currently include a storefront, cart, payment integration, or order fulfillment workflow.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## What it does
 
-## Description
+- Registers customers and authenticates them with short-lived access tokens and rotating refresh tokens.
+- Tracks products, on-hand stock, reserved stock, and stock movements.
+- Lets administrators create products and adjust stock.
+- Lets authenticated customers reserve available stock, inspect their reservations, and release or commit an active reservation.
+- Expires abandoned reservations automatically so their stock becomes available again.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## How it works
 
-## Project setup
+The API is organized into NestJS modules. Controllers define HTTP routes and validate incoming DTOs; services contain business logic and use `PrismaService` to access PostgreSQL.
 
-```bash
-$ npm install
+```text
+prisma.config.ts
+prisma/
+  schema.prisma
+  migrations/
+src/
+  auth/       registration, login, JWT/session lifecycle, authentication guard
+  users/      user persistence and credential lookup
+  inventory/  products, stock movements, reservations, role guard, expiry sweep
+  prisma/     Prisma client connection lifecycle
+  main.ts     HTTP bootstrap, Helmet, CORS, validation, shutdown hooks
 ```
 
-## Compile and run the project
+### Authentication and access control
+
+The JWT guard is global: routes require `Authorization: Bearer <accessToken>` unless marked with `@Public()`. New routes should be treated as authenticated by default. The `@CurrentUser()` decorator provides the authenticated user's ID and email. Routes that need a role use `@Roles(...)` and `RolesGuard`, which reads the user's current role from the database.
+
+Passwords are hashed with Argon2id. Access and refresh tokens use separate secrets, HS256, and issuer/audience validation. Refresh tokens are stored as hashes in `AuthSession`; refreshing rotates the token, and reuse of a replaced token revokes the user's sessions. Expired sessions are cleaned up daily.
+
+New users have the `CUSTOMER` role. There is no public endpoint for promoting a user to `ADMIN`; administrator provisioning must be handled through a trusted operational process.
+
+### Inventory and reservations
+
+`InventoryItem.onHand` is physical stock and `InventoryItem.reserved` is stock held for active reservations. Available stock is `onHand - reserved`. Stock changes are performed transactionally, with a `StockMovement` ledger entry for initial stock, adjustments, and committed reservations.
+
+Reservation requests merge duplicate SKUs and update inventory in a transaction. A conditional database update only reserves stock when enough remains, preventing concurrent requests from overselling. Reservation keys are unique per user, and stock adjustment keys are unique in the movement ledger, making retries safe. A reservation is held for 15 minutes. A scheduled worker checks for expired holds every minute and releases their reserved quantities; it uses PostgreSQL row locking so multiple app instances can share the work.
+
+Reservation states are `ACTIVE`, `COMMITTED`, `RELEASED`, and `EXPIRED`. Only an active, unexpired reservation can be committed. Committing reduces both `reserved` and `onHand`; releasing or expiring only reduces `reserved`.
+
+## Requirements
+
+- Node.js and npm (use a version compatible with the installed NestJS/TypeScript toolchain).
+- PostgreSQL.
+
+## Getting started
+
+1. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+2. Create a PostgreSQL database and copy `.env.example` to `.env`. Set `DATABASE_URL` to the local database. Replace both token secrets with distinct random values of at least 32 bytes. Do not use development secrets in a deployed environment.
+
+   The API requires `DATABASE_URL`, `ACCESS_TOKEN_SECRET`, `REFRESH_TOKEN_SECRET`, `JWT_ISSUER`, and `JWT_AUDIENCE`. Token TTLs have defaults, shown below. `PORT` defaults to `3000`; `CORS_ORIGINS` is an optional comma-separated allow-list.
+
+   ```dotenv
+   DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/ecommerce?schema=public"
+   ACCESS_TOKEN_SECRET="replace-with-a-random-secret-at-least-32-bytes"
+   REFRESH_TOKEN_SECRET="use-a-different-random-secret-at-least-32-bytes"
+   ACCESS_TOKEN_TTL_SECONDS=900
+   REFRESH_TOKEN_TTL_SECONDS=2592000
+   JWT_ISSUER="ecommerce-api"
+   JWT_AUDIENCE="ecommerce-api"
+   PORT=3000
+   # Optional:
+   # CORS_ORIGINS="http://localhost:5173,https://shop.example.com"
+   ```
+
+3. Apply the Prisma schema and generate the client. The checked-in migration history currently contains only the original user and session migrations, while `schema.prisma` also defines inventory tables and newer session/user fields. For a local development database, create and apply a migration from the current schema:
+
+   ```bash
+   npx prisma migrate dev --name complete_current_schema
+   npx prisma generate
+   ```
+
+   Review and commit the resulting migration. For a deployed database, use reviewed, committed migrations with `npx prisma migrate deploy`; do not use `migrate dev` against production.
+
+4. Start the API:
+
+   ```bash
+   npm run start:dev
+   ```
+
+   The server listens on `http://localhost:3000` by default. `GET /` returns a simple `Hello World!` response.
+
+## HTTP API
+
+All request bodies are validated. Unknown properties are rejected, and DTO values are transformed where configured. Unless otherwise stated, endpoints require a bearer access token. IDs for reservation routes are UUIDs.
+
+### Authentication
+
+| Method | Path | Auth | Request | Result |
+| --- | --- | --- | --- | --- |
+| `POST` | `/auth/register` | Public | `{ "email": "person@example.com", "password": "secret123" }` | `201`; user ID, email, creation time |
+| `POST` | `/auth/login` | Public | `{ "email": "person@example.com", "password": "secret123" }` | `200`; access and refresh tokens |
+| `POST` | `/auth/refresh` | Public | `{ "refreshToken": "..." }` | `200`; rotated access and refresh tokens |
+| `POST` | `/auth/logout` | Public | `{ "refreshToken": "..." }` | `204`; revokes that session when valid |
+| `POST` | `/auth/logout-all` | Bearer | No body | `204`; revokes all sessions for the current user |
+
+Registration normalizes email to lowercase and requires a valid email and a password of 6–128 characters. Login returns `accessToken`, `refreshToken`, `tokenType`, `accessTokenExpiresIn`, and `refreshTokenExpiresIn`.
+
+### Inventory
+
+| Method | Path | Access | Request | Result |
+| --- | --- | --- | --- | --- |
+| `POST` | `/inventory/products` | Admin | `{ "sku": "PHONE-001", "name": "Phone", "initialStock": 20 }` | `201`; product and initial stock |
+| `POST` | `/inventory/products/:sku/adjust` | Admin | `Idempotency-Key` header; `{ "delta": 5, "reason": "Restock" }` | `200`; updated stock |
+| `GET` | `/inventory/products/:sku` | Bearer | — | `200`; product name and on-hand, reserved, available quantities |
+| `POST` | `/inventory/reservations` | Bearer | `Idempotency-Key` header; `{ "items": [{ "sku": "PHONE-001", "quantity": 1 }] }` | `201`; reservation |
+| `GET` | `/inventory/reservations/:id` | Bearer, owner | — | `200`; reservation and items |
+| `POST` | `/inventory/reservations/:id/release` | Bearer, owner | No body | `200`; released reservation |
+| `POST` | `/inventory/reservations/:id/commit` | Bearer, owner | No body | `200`; committed reservation |
+
+Both inventory idempotency keys must be sent as `Idempotency-Key` and contain 8–128 characters. Reservation items accept 1–50 entries; each quantity must be between 1 and 10,000. Product SKUs must match `^[A-Z0-9][A-Z0-9_-]{1,63}$`. Stock adjustment deltas may be from -1,000,000 to 1,000,000, excluding zero; an adjustment cannot reduce on-hand stock below the reserved quantity.
+
+Typical errors use NestJS HTTP status codes: `400` for invalid input or missing idempotency keys, `401` for invalid/missing credentials, `403` for insufficient role access, `404` for unknown products or reservations, and `409` for conflicts such as insufficient stock or invalid reservation state.
+
+### Example flow
+
+Register and sign in to obtain a bearer token:
 
 ```bash
-# development
-$ npm run start
+curl -X POST http://localhost:3000/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"customer@example.com","password":"secret123"}'
 
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+curl -X POST http://localhost:3000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"customer@example.com","password":"secret123"}'
 ```
 
-## Run tests
+Use the returned access token to reserve stock. Replace the example token with the `accessToken` from login:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+curl -X POST http://localhost:3000/inventory/reservations \
+  -H 'Authorization: Bearer ACCESS_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: checkout-attempt-001' \
+  -d '{"items":[{"sku":"PHONE-001","quantity":1}]}'
 ```
 
-## Deployment
+Product creation and stock adjustment require an account whose database role is `ADMIN`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Development commands
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run start:dev  # watch mode
+npm run build       # compile
+npm run lint        # lint src/ and test/
+npm test            # unit tests
+npm run test:e2e    # end-to-end tests
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+The test suite is still in progress. In particular, `test/inventory.e2e-spec.ts` is an unfinished scaffold and currently references test setup variables that are not defined; inventory e2e coverage needs repair before relying on `npm run test:e2e` as a complete verification.
 
-## Observability
+## Schema changes and migrations
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-To add it to this project:
+`prisma/schema.prisma` is the source of truth for the data model. When it changes, create and review a migration, then regenerate the client:
 
 ```bash
-$ npm install @nestjs/observe
+npx prisma migrate dev --name describe_the_change
+npx prisma generate
 ```
 
-Then follow the [setup guide](https://docs.nestjs.com/observability/overview) - it takes a single import and an app key.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Commit both the migration and generated client changes. Production deployment should apply committed migrations using `npx prisma migrate deploy`. Inventory operations rely on PostgreSQL transactions, conditional SQL updates, and `FOR UPDATE SKIP LOCKED`; the implementation is PostgreSQL-specific.
