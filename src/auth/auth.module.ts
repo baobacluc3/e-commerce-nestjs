@@ -1,28 +1,27 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
-import { JwtModule } from '@nestjs/jwt';
-import authConfig from './config/auth.config';
-import { UsersModule } from '../users/user.module';
-import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { SessionCleanupService } from './services/session-cleanup.service';
-import { TokenService } from './token.service';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { PrismaModule } from '../prisma/prisma.module';
+import { JwtModule } from '@nestjs/jwt';
+import { AuthController } from './auth.controller';
+import { JwtStrategy } from './jwt.strategy';
+import { JwtAuthGuard } from './jwt-auth.guard';
+import { RolesGuard } from './roles.guard';
 
 @Module({
   imports: [
-    UsersModule,
-    ConfigModule.forFeature(authConfig),
-    JwtModule.register({}), // secrets are passed per call in TokenService
+    ConfigModule,
+    PrismaModule,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+      }),
+    }),
   ],
   controllers: [AuthController],
-  providers: [
-    AuthService,
-    TokenService,
-    SessionCleanupService,
-    { provide: APP_GUARD, useClass: JwtAuthGuard }, // protected by default
-  ],
-  exports: [TokenService],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard, RolesGuard],
+  exports: [AuthService, JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}

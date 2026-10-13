@@ -23,12 +23,17 @@ export * from './enums.js';
  */
 export type User = Prisma.UserModel
 /**
- * Model AuthSession
+ * Model RefreshToken
  * 
  */
-export type AuthSession = Prisma.AuthSessionModel
+export type RefreshToken = Prisma.RefreshTokenModel
 /**
- * Model PasswordResetToken
+ * Model Category
  * 
  */
-export type PasswordResetToken = Prisma.PasswordResetTokenModel
+export type Category = Prisma.CategoryModel
+/**
+ * Model Product
+ * 
+ */
+export type Product = Prisma.ProductModel

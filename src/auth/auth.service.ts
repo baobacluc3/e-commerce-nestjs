@@ -1,176 +1,212 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
+  ConflictException,
   Injectable,
-  OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
-import { PrismaService } from '../prisma/prisma.service';
-import { UsersService } from '../users/user.service';
-import type { RequestMeta, TokenResponse } from './types/auth.types';
-import { TokenService } from './token.service';
-import { LoginDto } from './dto/login.dto';
+import { createHash, randomBytes } from 'node:crypto';
+
 import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+import { PrismaService } from '../prisma/prisma.service';
 
-const ARGON2_OPTIONS = { type: argon2.argon2id } as const;
-const INVALID_REFRESH = 'Invalid refresh token.';
+const ACCESS_TOKEN_TTL = 15 * 60; // seconds
+const REFRESH_TOKEN_TTL = 7 * 24 * 60 * 60 * 1000; // milliseconds
+const INVALID_CREDENTIALS = 'Invalid email or password';
 
-function safeEqualHex(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'hex');
-  const bufB = Buffer.from(b, 'hex');
-  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
+type AuthUser = {
+  id: string;
+  email: string;
+};
+
+type AuthResponse = {
+  accessToken: string;
+  refreshToken: string;
+  tokenType: 'Bearer';
+  expiresIn: number;
+  user: AuthUser;
+};
+
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'P2002'
+  );
 }
 
 @Injectable()
-export class AuthService implements OnModuleInit {
-  /** Verified against when the email is unknown, so timing doesn't leak existence. */
-  private dummyHash!: string;
-
+export class AuthService {
   constructor(
-    private readonly users: UsersService,
     private readonly prisma: PrismaService,
-    private readonly tokens: TokenService,
+    private readonly jwtService: JwtService,
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    this.dummyHash = await argon2.hash(
-      randomBytes(16).toString('hex'),
-      ARGON2_OPTIONS,
-    );
-  }
-
-  async register(dto: RegisterDto) {
-    const passwordHash = await argon2.hash(dto.password, ARGON2_OPTIONS);
-    const user = await this.users.createUser({
-      email: dto.email,
-      passwordHash,
+  async register(dto: RegisterDto): Promise<AuthResponse> {
+    const passwordHash = await argon2.hash(dto.password, {
+      type: argon2.argon2id,
     });
-    return { id: user.id, email: user.email, createdAt: user.createdAt };
-  }
 
-  async login(dto: LoginDto, meta: RequestMeta): Promise<TokenResponse> {
-    const user = await this.users.findCredentialsByEmail(dto.email);
+    let user: AuthUser;
 
-    // Always run one Argon2 verification, whether or not the user exists.
-    const valid = await argon2.verify(
-      user?.passwordHash ?? this.dummyHash,
-      dto.password,
-    );
-    if (!user || !valid) {
-      throw new UnauthorizedException('Invalid email or password.');
+    try {
+      user = await this.prisma.user.create({
+        data: {
+          email: dto.email,
+          passwordHash,
+        },
+        select: {
+          id: true,
+          email: true,
+        },
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new ConflictException('Email already registered');
+      }
+
+      throw error;
     }
 
-    const sessionId = randomUUID(); // becomes the refresh token's jti
-    const refreshToken = await this.tokens.signRefreshToken(user.id, sessionId);
+    return this.issueTokens(user);
+  }
 
-    await this.prisma.authSession.create({
-      data: {
-        id: sessionId,
-        userId: user.id,
-        refreshTokenHash: this.tokens.hash(refreshToken),
-        expiresAt: this.refreshExpiry(),
-        userAgent: meta.userAgent?.slice(0, 512),
-        ip: meta.ip,
+  async login(dto: LoginDto): Promise<AuthResponse> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+      select: {
+        id: true,
+        email: true,
+        passwordHash: true,
       },
     });
 
-    return this.buildResponse(user, refreshToken);
+    if (!user) {
+      // Avoid an immediate response when the email does not exist.
+      await argon2.hash(dto.password);
+      throw new UnauthorizedException(INVALID_CREDENTIALS);
+    }
+
+    const validPassword = await argon2.verify(user.passwordHash, dto.password);
+
+    if (!validPassword) {
+      throw new UnauthorizedException(INVALID_CREDENTIALS);
+    }
+
+    return this.issueTokens({
+      id: user.id,
+      email: user.email,
+    });
   }
 
-  /**
-   * Rotation: the session ID stays the same, but the stored hash is replaced
-   * with the hash of the new refresh token. Presenting an older token for a
-   * live session therefore means it was already rotated out (replay), and all
-   * of that user's sessions are revoked.
-   */
-  async refresh(refreshToken: string): Promise<TokenResponse> {
-    const { userId, sessionId } = await this.tokens.verifyRefreshToken(refreshToken);
+  async refresh(refreshToken: string): Promise<AuthResponse> {
+    const now = new Date();
 
-    const session = await this.prisma.authSession.findUnique({
-      where: { id: sessionId },
-      include: { user: { select: { id: true, email: true } } },
+    const current = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: hashToken(refreshToken) },
     });
 
     if (
-      !session ||
-      session.userId !== userId ||
-      session.revokedAt !== null ||
-      session.expiresAt <= new Date()
+      !current ||
+      current.revokedAt ||
+      current.expiresAt.getTime() <= now.getTime()
     ) {
-      throw new UnauthorizedException(INVALID_REFRESH);
+      throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    const presentedHash = this.tokens.hash(refreshToken);
+    const user = await this.prisma.user.findUnique({
+      where: { id: current.userId },
+      select: { id: true, email: true },
+    });
 
-    if (!safeEqualHex(session.refreshTokenHash, presentedHash)) {
-      await this.revokeAllSessions(userId); // reuse detected
-      throw new UnauthorizedException(INVALID_REFRESH);
+    if (!user) {
+      throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    const newRefreshToken = await this.tokens.signRefreshToken(userId, sessionId);
+    const nextRefreshToken = randomBytes(32).toString('base64url');
 
-    // Compare-and-swap: only one of two concurrent refreshes can win.
-    const { count } = await this.prisma.authSession.updateMany({
+    // Atomically consume the old token and create the replacement.
+    await this.prisma.$transaction(async (tx) => {
+      const result = await tx.refreshToken.updateMany({
+        where: {
+          id: current.id,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { revokedAt: now },
+      });
+
+      // Prevent two simultaneous requests from using the same token.
+      if (result.count !== 1) {
+        throw new UnauthorizedException('Invalid or expired refresh token');
+      }
+
+      await tx.refreshToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: hashToken(nextRefreshToken),
+          expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL),
+        },
+      });
+    });
+
+    const accessToken = await this.jwtService.signAsync(
+      { sub: user.id, email: user.email },
+      { expiresIn: ACCESS_TOKEN_TTL },
+    );
+
+    return {
+      accessToken,
+      refreshToken: nextRefreshToken,
+      tokenType: 'Bearer',
+      expiresIn: ACCESS_TOKEN_TTL,
+      user,
+    };
+  }
+
+  async logout(refreshToken: string): Promise<{ message: string }> {
+    await this.prisma.refreshToken.updateMany({
       where: {
-        id: sessionId,
-        refreshTokenHash: presentedHash,
+        tokenHash: hashToken(refreshToken),
         revokedAt: null,
       },
       data: {
-        refreshTokenHash: this.tokens.hash(newRefreshToken),
-        expiresAt: this.refreshExpiry(), // sliding expiry
+        revokedAt: new Date(),
       },
     });
-    if (count !== 1) {
-      throw new UnauthorizedException(INVALID_REFRESH);
-    }
 
-    return this.buildResponse(session.user, newRefreshToken);
+    // Same response even if the token is unknown or already revoked.
+    return { message: 'Logged out' };
   }
 
-  /** Idempotent: never reveals whether the token was valid. */
-  async logout(refreshToken: string): Promise<void> {
-    try {
-      const { userId, sessionId } = await this.tokens.verifyRefreshToken(refreshToken);
-      await this.prisma.authSession.updateMany({
-        where: {
-          id: sessionId,
-          userId,
-          refreshTokenHash: this.tokens.hash(refreshToken),
-          revokedAt: null,
-        },
-        data: { revokedAt: new Date() },
-      });
-    } catch (error) {
-      if (!(error instanceof UnauthorizedException)) throw error;
-    }
-  }
+  private async issueTokens(user: AuthUser): Promise<AuthResponse> {
+    const accessToken = await this.jwtService.signAsync(
+      { sub: user.id, email: user.email },
+      { expiresIn: ACCESS_TOKEN_TTL },
+    );
 
-  async logoutAll(userId: string): Promise<void> {
-    await this.revokeAllSessions(userId);
-  }
+    const refreshToken = randomBytes(32).toString('base64url');
 
-  private async revokeAllSessions(userId: string): Promise<void> {
-    await this.prisma.authSession.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
+    await this.prisma.refreshToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(refreshToken),
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL),
+      },
     });
-  }
 
-  private refreshExpiry(): Date {
-    return new Date(Date.now() + this.tokens.refreshTtlSeconds * 1000);
-  }
-
-  private async buildResponse(
-    user: { id: string; email: string },
-    refreshToken: string,
-  ): Promise<TokenResponse> {
     return {
-      accessToken: await this.tokens.signAccessToken(user),
+      accessToken,
       refreshToken,
       tokenType: 'Bearer',
-      accessTokenExpiresIn: this.tokens.accessTtlSeconds,
-      refreshTokenExpiresIn: this.tokens.refreshTtlSeconds,
+      expiresIn: ACCESS_TOKEN_TTL,
+      user,
     };
   }
 }

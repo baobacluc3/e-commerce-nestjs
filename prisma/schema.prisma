@@ -8,44 +8,90 @@ datasource db {
   provider = "postgresql"
 }
 
+
+
 enum Role {
   CUSTOMER
   ADMIN
 }
 
 model User {
-  id           String        @id @default(uuid())
-  email        String        @unique
+  // Keep your existing fields
+  id           String         @id @default(uuid())
+  email        String         @unique
   passwordHash String
-  role         Role          @default(CUSTOMER)
-  createdAt    DateTime      @default(now())
-  sessions     AuthSession[]
-  passwordResetTokens PasswordResetToken[]
-}
-
-model AuthSession {
-  id               String   @id @default(uuid())
-  userId           String
-  refreshTokenHash String
-  expiresAt        DateTime
-  revokedAt        DateTime?
-  userAgent        String?
-  ip               String?
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([expiresAt])
-}
-
-model PasswordResetToken {
-  id        String   @id @default(uuid())
-  userId    String
-  tokenHash String   @unique
-  expiresAt DateTime
-  usedAt    DateTime?
+  name      String?
+  role      Role     @default(CUSTOMER)
   createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
-  @@index([expiresAt])
 }
+
+
+enum ProductStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  products Product[]
+
+  @@index([isActive, deletedAt])
+}
+
+model Product {
+  id          String        @id @default(cuid())
+  name        String
+  slug        String        @unique
+  description String?
+  price       Int
+  status      ProductStatus @default(DRAFT)
+  images      String[]      @default([])
+
+  categoryId String
+  category   Category @relation(fields: [categoryId],references: [id],onDelete: Restrict)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+
+//The B-tree indexes support price/newest sorting and category filtering. The GIN trigram indexes support substring keyword searches such as ILIKE '%keyboard%'
+  @@index([status, deletedAt, createdAt, id], map: "product_status_deleted_created_id_idx")
+  @@index([status, deletedAt, price, id], map: "product_status_deleted_price_id_idx")
+  @@index([categoryId, status, deletedAt, createdAt, id], map: "product_category_status_deleted_created_id_idx")
+  @@index([categoryId, status, deletedAt, price, id], map: "product_category_status_deleted_price_id_idx")
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "product_name_trgm_idx")
+  @@index([description(ops: raw("gin_trgm_ops"))], type: Gin, map: "product_description_trgm_idx")
+}
+
+/*
+price Int: stores whole VND amounts, never floating-point prices.
+images String[]: stores image URLs or storage paths. PostgreSQL supports scalar lists in Prisma. 
+deletedAt: a non-null timestamp means the record is soft-deleted.
+DRAFT: products are not publicly visible until published.
+slug @unique: prevents duplicate URLs, including URLs belonging to soft-deleted records.
+*/

@@ -1,58 +1,73 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Prisma } from '../generated/prisma/client';
-
-export interface CreateUserInput {
-  email: string;
-  passwordHash: string;
-}
+import { UpdateMeDto } from './dto/update-me.dto';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(private readonly prisma: PrismaService) {}
 
-  async findByEmail(email: string) {
-    return this.prisma.user.findUnique({
-      where: {
-        email,
-      },
+  async getMe(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
       select: {
-        email: true,
         id: true,
+        email: true,
+        name: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return user;
+  }
+
+  async updateMe(userId: string, dto: UpdateMeDto) {
+    if (dto.name === undefined) {
+      return this.getMe(userId);
+    }
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { name: dto.name },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
         createdAt: true,
       },
     });
   }
 
-  async createUser(input: CreateUserInput) {
-    try {
-      return await this.prisma.user.create({
-        data: {
-          email: input.email,
-          passwordHash: input.passwordHash,
-        },
+  async findAll(page: number, limit: number) {
+    const [users, total] = await this.prisma.$transaction([
+      this.prisma.user.findMany({
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
         select: {
           id: true,
           email: true,
+          name: true,
+          role: true,
           createdAt: true,
         },
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        throw new ConflictException('Email already exists');
-      }
+      }),
+      this.prisma.user.count(),
+    ]);
 
-      throw error;
-    }
-  }
-
-  async findCredentialsByEmail(email: string) {
-    return this.prisma.user.findUnique({
-      where: { email },
-      select: { id: true, email: true, passwordHash: true },
-    });
+    return {
+      data: users,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 }
