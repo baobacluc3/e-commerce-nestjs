@@ -15,22 +15,3 @@ export const Role = {
 } as const
 
 export type Role = (typeof Role)[keyof typeof Role]
-
-
-export const ReservationStatus = {
-  ACTIVE: 'ACTIVE',
-  COMMITTED: 'COMMITTED',
-  RELEASED: 'RELEASED',
-  EXPIRED: 'EXPIRED'
-} as const
-
-export type ReservationStatus = (typeof ReservationStatus)[keyof typeof ReservationStatus]
-
-
-export const MovementType = {
-  INITIAL: 'INITIAL',
-  ADJUSTMENT: 'ADJUSTMENT',
-  COMMIT: 'COMMIT'
-} as const
-
-export type MovementType = (typeof MovementType)[keyof typeof MovementType]

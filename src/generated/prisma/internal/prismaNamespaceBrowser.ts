@@ -52,12 +52,8 @@ export const AnyNull = runtime.AnyNull
 
 export const ModelName = {
   User: 'User',
-  Product: 'Product',
-  InventoryItem: 'InventoryItem',
-  StockMovement: 'StockMovement',
   AuthSession: 'AuthSession',
-  Reservation: 'Reservation',
-  ReservationItem: 'ReservationItem'
+  PasswordResetToken: 'PasswordResetToken'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -87,47 +83,11 @@ export const UserScalarFieldEnum = {
 export type UserScalarFieldEnum = (typeof UserScalarFieldEnum)[keyof typeof UserScalarFieldEnum]
 
 
-export const ProductScalarFieldEnum = {
-  id: 'id',
-  sku: 'sku',
-  name: 'name',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt'
-} as const
-
-export type ProductScalarFieldEnum = (typeof ProductScalarFieldEnum)[keyof typeof ProductScalarFieldEnum]
-
-
-export const InventoryItemScalarFieldEnum = {
-  productId: 'productId',
-  onHand: 'onHand',
-  reserved: 'reserved',
-  updatedAt: 'updatedAt'
-} as const
-
-export type InventoryItemScalarFieldEnum = (typeof InventoryItemScalarFieldEnum)[keyof typeof InventoryItemScalarFieldEnum]
-
-
-export const StockMovementScalarFieldEnum = {
-  id: 'id',
-  productId: 'productId',
-  type: 'type',
-  delta: 'delta',
-  reason: 'reason',
-  actorId: 'actorId',
-  idempotencyKey: 'idempotencyKey',
-  createdAt: 'createdAt'
-} as const
-
-export type StockMovementScalarFieldEnum = (typeof StockMovementScalarFieldEnum)[keyof typeof StockMovementScalarFieldEnum]
-
-
 export const AuthSessionScalarFieldEnum = {
   id: 'id',
   userId: 'userId',
   refreshTokenHash: 'refreshTokenHash',
   expiresAt: 'expiresAt',
-  createdAt: 'createdAt',
   revokedAt: 'revokedAt',
   userAgent: 'userAgent',
   ip: 'ip'
@@ -136,25 +96,16 @@ export const AuthSessionScalarFieldEnum = {
 export type AuthSessionScalarFieldEnum = (typeof AuthSessionScalarFieldEnum)[keyof typeof AuthSessionScalarFieldEnum]
 
 
-export const ReservationScalarFieldEnum = {
+export const PasswordResetTokenScalarFieldEnum = {
   id: 'id',
   userId: 'userId',
-  idempotencyKey: 'idempotencyKey',
-  status: 'status',
+  tokenHash: 'tokenHash',
   expiresAt: 'expiresAt',
+  usedAt: 'usedAt',
   createdAt: 'createdAt'
 } as const
 
-export type ReservationScalarFieldEnum = (typeof ReservationScalarFieldEnum)[keyof typeof ReservationScalarFieldEnum]
-
-
-export const ReservationItemScalarFieldEnum = {
-  reservationId: 'reservationId',
-  productId: 'productId',
-  quantity: 'quantity'
-} as const
-
-export type ReservationItemScalarFieldEnum = (typeof ReservationItemScalarFieldEnum)[keyof typeof ReservationItemScalarFieldEnum]
+export type PasswordResetTokenScalarFieldEnum = (typeof PasswordResetTokenScalarFieldEnum)[keyof typeof PasswordResetTokenScalarFieldEnum]
 
 
 export const SortOrder = {

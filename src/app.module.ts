@@ -7,10 +7,9 @@ import { AuthModule } from './auth/auth.module';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD } from '@nestjs/core';
-import { InventoryModule } from './inventory/inventory.module';
 
 @Module({
-  imports: [PrismaModule, ConfigModule.forRoot({ isGlobal: true }), InventoryModule, ThrottlerModule.forRoot([{
+  imports: [PrismaModule, ConfigModule.forRoot({ isGlobal: true }), ThrottlerModule.forRoot([{
     ttl:60_000,
     limit:100,
     skipIf: () => process.env.NODE_ENV === 'test',
