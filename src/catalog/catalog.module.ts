@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { RedisModule } from '../redis/redis.module';
 
 import { CategoriesService } from './categories.service';
 import { ProductsService } from './products.service';
@@ -12,7 +13,7 @@ import { ProductsController } from './products.controller';
 import { AdminProductsController } from './admin-products.controller';
 
 @Module({
-  imports: [PrismaModule, AuthModule],
+  imports: [PrismaModule, AuthModule, RedisModule],
   controllers: [
     CategoriesController,
     AdminCategoriesController,

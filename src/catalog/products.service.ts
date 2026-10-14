@@ -15,20 +15,33 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { Prisma } from '../generated/prisma/client';
 
 import { ProductSearchDto, ProductSort } from './dto/product-search.dto';
+import { Logger } from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+
+import { RedisService } from '../redis/redis.service';
+import {
+  PRODUCT_CACHE_LOCK_TTL_MS,
+  PRODUCT_CACHE_MAX_WAIT_ATTEMPTS,
+  PRODUCT_CACHE_WAIT_MS,
+  PRODUCT_DETAIL_TTL_SECONDS,
+  PRODUCT_LIST_TTL_SECONDS,
+  PRODUCT_LIST_VERSION_KEY,
+  productDetailVersionKey,
+} from './catalog-cache.constants';
 
 type CursorPayload =
   | {
-      v: 1;
-      sort: ProductSort.NEWEST;
-      id: string;
-      createdAt: string;
-    }
+    v: 1;
+    sort: ProductSort.NEWEST;
+    id: string;
+    createdAt: string;
+  }
   | {
-      v: 1;
-      sort: ProductSort.PRICE_ASC | ProductSort.PRICE_DESC;
-      id: string;
-      price: number;
-    };
+    v: 1;
+    sort: ProductSort.PRICE_ASC | ProductSort.PRICE_DESC;
+    id: string;
+    price: number;
+  };
 
 function isPrismaCode(error: unknown, code: string): boolean {
   return (
@@ -57,7 +70,9 @@ const productSelect = {
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ProductsService.name);
+
+  constructor(private readonly prisma: PrismaService, private readonly redis: RedisService) { }
 
   private async ensureActiveCategory(categoryId: string) {
     const category = await this.prisma.category.findFirst({
@@ -78,7 +93,7 @@ export class ProductsService {
     await this.ensureActiveCategory(dto.categoryId);
 
     try {
-      return await this.prisma.product.create({
+      const product = await this.prisma.product.create({
         data: {
           name: dto.name,
           slug: dto.slug,
@@ -90,6 +105,9 @@ export class ProductsService {
         },
         select: productSelect,
       });
+
+      await this.invalidateCatalogCaches([product.slug])
+      return product
     } catch (error) {
       if (isPrismaCode(error, 'P2002')) {
         throw new ConflictException('Product slug already exists');
@@ -130,19 +148,35 @@ export class ProductsService {
   }
 
   async findPublicBySlug(slug: string) {
+    const encodedSlug = encodeURIComponent(slug);
+
+    return this.cacheAside(
+      `catalog:products:detail:${encodedSlug}`,
+      productDetailVersionKey(slug),
+      PRODUCT_DETAIL_TTL_SECONDS,
+      () => this.loadPublicProductBySlug(slug),
+    );
+  }
+
+  private async loadPublicProductBySlug(slug: string) {
     const product = await this.prisma.product.findFirst({
       where: {
         slug,
         status: ProductStatus.PUBLISHED,
         deletedAt: null,
         category: {
-          is: { isActive: true, deletedAt: null },
+          is: {
+            isActive: true,
+            deletedAt: null,
+          },
         },
       },
       select: productSelect,
     });
 
-    if (!product) throw new NotFoundException('Product not found');
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
 
     return product;
   }
@@ -175,7 +209,7 @@ export class ProductsService {
   async update(id: string, dto: UpdateProductDto) {
     const existing = await this.prisma.product.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true },
+      select: { id: true,slug:true },
     });
 
     if (!existing) throw new NotFoundException('Product not found');
@@ -184,8 +218,9 @@ export class ProductsService {
       await this.ensureActiveCategory(dto.categoryId);
     }
 
+    let updatedProduct
     try {
-      return await this.prisma.product.update({
+       updatedProduct =  await this.prisma.product.update({
         where: { id },
         data: { ...dto },
         select: productSelect,
@@ -196,23 +231,56 @@ export class ProductsService {
       }
       throw error;
     }
+    await this.invalidateCatalogCaches([existing.slug,updatedProduct.slug])
+    return updatedProduct
   }
 
   async softDelete(id: string) {
-    const result = await this.prisma.product.updateMany({
-      where: { id, deletedAt: null },
-      data: { deletedAt: new Date() },
-    });
+  const existing = await this.prisma.product.findFirst({
+    where: { id, deletedAt: null },
+    select: { slug: true },
+  });
 
-    if (result.count === 0) {
-      throw new NotFoundException('Product not found');
-    }
-
-    return { message: 'Product deleted' };
+  if (!existing) {
+    throw new NotFoundException('Product not found');
   }
 
+  const result = await this.prisma.product.updateMany({
+    where: { id, deletedAt: null },
+    data: { deletedAt: new Date() },
+  });
+
+  if (result.count === 0) {
+    throw new NotFoundException('Product not found');
+  }
+
+  await this.invalidateCatalogCaches([existing.slug]);
+
+  return { message: 'Product deleted' };
+}
+
   async searchPublic(query: ProductSearchDto) {
-    return this.search(query, true);
+    // Explicit field order creates a stable cache key.
+    const filters = {
+      categoryId: query.categoryId ?? null,
+      minPrice: query.minPrice ?? null,
+      maxPrice: query.maxPrice ?? null,
+      q: query.q?.trim() ?? null,
+      sort: query.sort ?? ProductSort.NEWEST,
+      limit: query.limit ?? 20,
+      cursor: query.cursor ?? null,
+    };
+
+    const hash = createHash('sha256')
+      .update(JSON.stringify(filters))
+      .digest('hex');
+
+    return this.cacheAside(
+      `catalog:products:list:${hash}`,
+      PRODUCT_LIST_VERSION_KEY,
+      PRODUCT_LIST_TTL_SECONDS,
+      () => this.search(query, true),
+    );
   }
 
   async searchAdmin(query: ProductSearchDto) {
@@ -323,17 +391,17 @@ export class ProductsService {
     const payload: CursorPayload =
       sort === ProductSort.NEWEST
         ? {
-            v: 1,
-            sort,
-            id: product.id,
-            createdAt: product.createdAt.toISOString(),
-          }
+          v: 1,
+          sort,
+          id: product.id,
+          createdAt: product.createdAt.toISOString(),
+        }
         : {
-            v: 1,
-            sort,
-            id: product.id,
-            price: product.price,
-          };
+          v: 1,
+          sort,
+          id: product.id,
+          price: product.price,
+        };
 
     return Buffer.from(JSON.stringify(payload)).toString('base64url');
   }
@@ -429,5 +497,171 @@ export class ProductsService {
     };
   }
 
-  //The id tie-breaker is essential: multiple products can have the same price or creation timestamp. The cursor includes both sort values so that records are not skipped simply because their primary sort values match.
+
+  //The id tie-breaker is essential: multiple products can have the same price or creation timestamp. The cursor includes both sort values so that records are not skipped
+  // simply because their primary sort values match.
+
+  private async readCached<T>(key: string): Promise<{ hit: true, value: T } | { hit: false }> {
+    const raw = await this.redis.get(key);
+
+    if (raw === null) {
+      return { hit: false };
+    }
+
+    try {
+      return {
+        hit: true,
+        value: JSON.parse(raw) as T
+      }
+    } catch {
+      return {
+        hit: false
+      }
+    }
+  }
+
+
+
+  private async cacheAside<T>(
+    logicalKey: string,
+    versionKey: string,
+    ttlSeconds: number,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    let version: string;
+
+    // Cache failure must not make the product API unavailable.
+    try {
+      version = (await this.redis.get(versionKey)) ?? '0';
+    } catch {
+      return loader();
+    }
+
+    const cacheKey = `${logicalKey}:v${version}`;
+    const lockKey = `${cacheKey}:lock`;
+
+    try {
+      const cached = await this.readCached<T>(cacheKey);
+
+      if (cached.hit) {
+        return cached.value;
+      }
+    } catch {
+      return loader();
+    }
+
+    const lockToken = randomUUID();
+
+    for (
+      let attempt = 0;
+      attempt < PRODUCT_CACHE_MAX_WAIT_ATTEMPTS;
+      attempt++
+    ) {
+      let acquired: boolean;
+
+      try {
+        acquired = await this.redis.acquireLock(
+          lockKey,
+          lockToken,
+          PRODUCT_CACHE_LOCK_TTL_MS,
+        );
+      } catch {
+        return loader();
+      }
+
+      if (acquired) {
+        try {
+          // Another request may have populated the cache
+          // just before we acquired the lock.
+          try {
+            const cached = await this.readCached<T>(cacheKey);
+
+            if (cached.hit) {
+              return cached.value;
+            }
+          } catch {
+            return loader();
+          }
+
+          // Only the lock owner loads the database.
+          const value = await loader();
+
+          // Avoid caching stale data if an admin changed the
+          // product while the database query was running.
+          try {
+            const currentVersion =
+              (await this.redis.get(versionKey)) ?? '0';
+
+            if (currentVersion === version) {
+              await this.redis.set(
+                cacheKey,
+                JSON.stringify(value),
+                ttlSeconds,
+              );
+            }
+          } catch (error) {
+            this.logger.warn(
+              `Could not populate cache: ${error instanceof Error ? error.message : 'Unknown error'
+              }`,
+            );
+          }
+
+          return value;
+        } finally {
+          try {
+            await this.redis.releaseLock(lockKey, lockToken);
+          } catch (error) {
+            this.logger.warn(
+              `Could not release cache lock: ${error instanceof Error ? error.message : 'Unknown error'
+              }`,
+            );
+          }
+        }
+      }
+
+      // Another request owns the lock. Wait for its result.
+      await new Promise((resolve) =>
+        setTimeout(resolve, PRODUCT_CACHE_WAIT_MS),
+      );
+
+      try {
+        const currentVersion =
+          (await this.redis.get(versionKey)) ?? '0';
+
+        if (currentVersion !== version) {
+          // Data was invalidated during the wait.
+          return loader();
+        }
+
+        const cached = await this.readCached<T>(cacheKey);
+
+        if (cached.hit) {
+          return cached.value;
+        }
+      } catch {
+        return loader();
+      }
+    }
+
+    // Bounded waiting: do not block an API request indefinitely.
+    return loader();
+  }
+
+  private async invalidateCatalogCaches(slugs: string[]) {
+    const versionKeys = [
+      ...new Set(slugs.filter(Boolean)),
+    ].map(productDetailVersionKey);
+
+    try {
+      await Promise.all([
+        ...versionKeys.map((key) => this.redis.increment(key)),
+        this.redis.increment(PRODUCT_LIST_VERSION_KEY),
+      ]);
+    } catch (error) {
+      this.logger.error(
+        `Catalog cache invalidation failed: ${error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      );
+    }
+  }
 }
