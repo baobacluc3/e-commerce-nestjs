@@ -13,7 +13,6 @@ export class UsersService {
         id: true,
         email: true,
         name: true,
-        role: true,
         createdAt: true,
       },
     });
@@ -37,37 +36,9 @@ export class UsersService {
         id: true,
         email: true,
         name: true,
-        role: true,
         createdAt: true,
       },
     });
   }
 
-  async findAll(page: number, limit: number) {
-    const [users, total] = await this.prisma.$transaction([
-      this.prisma.user.findMany({
-        skip: (page - 1) * limit,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          role: true,
-          createdAt: true,
-        },
-      }),
-      this.prisma.user.count(),
-    ]);
-
-    return {
-      data: users,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
-  }
 }

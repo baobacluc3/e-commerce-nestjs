@@ -63,13 +63,6 @@ export class CategoriesService {
     return category;
   }
 
-  findAllAdmin() {
-    return this.prisma.category.findMany({
-      where: { deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
   async update(id: string, dto: UpdateCategoryDto) {
     const existing = await this.prisma.category.findFirst({
       where: { id, deletedAt: null },

@@ -9,14 +9,6 @@
 * 🟢 You can import this file directly.
 */
 
-export const Role = {
-  CUSTOMER: 'CUSTOMER',
-  ADMIN: 'ADMIN'
-} as const
-
-export type Role = (typeof Role)[keyof typeof Role]
-
-
 export const ProductStatus = {
   DRAFT: 'DRAFT',
   PUBLISHED: 'PUBLISHED',
@@ -24,3 +16,88 @@ export const ProductStatus = {
 } as const
 
 export type ProductStatus = (typeof ProductStatus)[keyof typeof ProductStatus]
+
+
+export const OrderStatus = {
+  PENDING_PAYMENT: 'PENDING_PAYMENT',
+  PAID: 'PAID',
+  CONFIRMED: 'CONFIRMED',
+  SHIPPING: 'SHIPPING',
+  COMPLETED: 'COMPLETED',
+  CANCELLED: 'CANCELLED',
+  EXPIRED: 'EXPIRED',
+  REFUND_PENDING: 'REFUND_PENDING',
+  REFUNDED: 'REFUNDED'
+} as const
+
+export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus]
+
+
+export const AuditActorType = {
+  USER: 'USER',
+  SYSTEM: 'SYSTEM'
+} as const
+
+export type AuditActorType = (typeof AuditActorType)[keyof typeof AuditActorType]
+
+
+export const IdempotencyStatus = {
+  IN_PROGRESS: 'IN_PROGRESS',
+  COMPLETED: 'COMPLETED'
+} as const
+
+export type IdempotencyStatus = (typeof IdempotencyStatus)[keyof typeof IdempotencyStatus]
+
+
+export const PaymentIntentStatus = {
+  PENDING: 'PENDING',
+  SUCCEEDED: 'SUCCEEDED',
+  REFUND_REQUIRED: 'REFUND_REQUIRED',
+  FAILED: 'FAILED',
+  REFUNDED: 'REFUNDED'
+} as const
+
+export type PaymentIntentStatus = (typeof PaymentIntentStatus)[keyof typeof PaymentIntentStatus]
+
+
+export const WebhookEventOutcome = {
+  RECEIVED: 'RECEIVED',
+  PROCESSED: 'PROCESSED',
+  UNKNOWN_PAYMENT: 'UNKNOWN_PAYMENT',
+  AMOUNT_MISMATCH: 'AMOUNT_MISMATCH',
+  ORDER_CANCELLED_REFUND_REQUIRED: 'ORDER_CANCELLED_REFUND_REQUIRED',
+  ORDER_ALREADY_PROCESSED: 'ORDER_ALREADY_PROCESSED',
+  ORDER_NOT_PAYABLE: 'ORDER_NOT_PAYABLE'
+} as const
+
+export type WebhookEventOutcome = (typeof WebhookEventOutcome)[keyof typeof WebhookEventOutcome]
+
+
+export const InventoryMovementType = {
+  STOCK_IN: 'STOCK_IN',
+  STOCK_OUT: 'STOCK_OUT',
+  ADJUSTMENT: 'ADJUSTMENT'
+} as const
+
+export type InventoryMovementType = (typeof InventoryMovementType)[keyof typeof InventoryMovementType]
+
+
+export const FlashSaleCampaignStatus = {
+  DRAFT: 'DRAFT',
+  ACTIVE: 'ACTIVE',
+  PAUSED: 'PAUSED',
+  ENDED: 'ENDED'
+} as const
+
+export type FlashSaleCampaignStatus = (typeof FlashSaleCampaignStatus)[keyof typeof FlashSaleCampaignStatus]
+
+
+export const ReservationStatus = {
+  PROVISIONAL: 'PROVISIONAL',
+  ACTIVE: 'ACTIVE',
+  CONFIRMED: 'CONFIRMED',
+  RELEASED: 'RELEASED',
+  EXPIRED: 'EXPIRED'
+} as const
+
+export type ReservationStatus = (typeof ReservationStatus)[keyof typeof ReservationStatus]

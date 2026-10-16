@@ -1,6 +1,6 @@
 generator client {
-  provider = "prisma-client"
-  output = "../src/generated/prisma"
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
   moduleFormat = "cjs"
 }
 
@@ -8,23 +8,22 @@ datasource db {
   provider = "postgresql"
 }
 
-
-
-enum Role {
-  CUSTOMER
-  ADMIN
-}
-
 model User {
   // Keep your existing fields
-  id           String         @id @default(uuid())
-  email        String         @unique
+  id           String   @id @default(uuid())
+  email        String   @unique
   passwordHash String
-  name      String?
-  role      Role     @default(CUSTOMER)
-  createdAt DateTime @default(now())
+  name         String?
+  createdAt    DateTime @default(now())
 
-  refreshTokens RefreshToken[]
+  refreshTokens         RefreshToken[]
+  cart                  Cart?
+  orders                Order[]
+  orderStatusHistory    OrderStatusHistory[] @relation("OrderStatusHistoryActor")
+  inventoryMovements    InventoryMovement[]  @relation("InventoryMovementActor")
+  idempotencyRecords    IdempotencyRecord[]
+  flashSaleQuotas       FlashSaleUserQuota[]
+  flashSaleReservations Reservation[]
 }
 
 model RefreshToken {
@@ -40,11 +39,56 @@ model RefreshToken {
   @@index([userId])
 }
 
-
 enum ProductStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  CONFIRMED
+  SHIPPING
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+}
+
+enum IdempotencyStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum PaymentIntentStatus {
+  PENDING
+  SUCCEEDED
+  REFUND_REQUIRED
+  FAILED
+  REFUNDED
+}
+
+enum WebhookEventOutcome {
+  RECEIVED
+  PROCESSED
+  UNKNOWN_PAYMENT
+  AMOUNT_MISMATCH
+  ORDER_CANCELLED_REFUND_REQUIRED
+  ORDER_ALREADY_PROCESSED
+  ORDER_NOT_PAYABLE
+}
+
+enum InventoryMovementType {
+  STOCK_IN
+  STOCK_OUT
+  ADJUSTMENT
 }
 
 model Category {
@@ -71,15 +115,19 @@ model Product {
   status      ProductStatus @default(DRAFT)
   images      String[]      @default([])
 
-  categoryId String
-  category   Category @relation(fields: [categoryId],references: [id],onDelete: Restrict)
+  categoryId                String
+  category                  Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  cartItems                 CartItem[]
+  orderItems                OrderItem[]
+  inventory                 Inventory?
+  flashSaleStocks           FlashSaleStock[]
+  flashSaleReservationItems ReservationItem[]
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-
-//The B-tree indexes support price/newest sorting and category filtering. The GIN trigram indexes support substring keyword searches such as ILIKE '%keyboard%'
+  //The B-tree indexes support price/newest sorting and category filtering. The GIN trigram indexes support substring keyword searches such as ILIKE '%keyboard%'
   @@index([status, deletedAt, createdAt, id], map: "product_status_deleted_created_id_idx")
   @@index([status, deletedAt, price, id], map: "product_status_deleted_price_id_idx")
   @@index([categoryId, status, deletedAt, createdAt, id], map: "product_category_status_deleted_created_id_idx")
@@ -88,10 +136,308 @@ model Product {
   @@index([description(ops: raw("gin_trgm_ops"))], type: Gin, map: "product_description_trgm_idx")
 }
 
-/*
-price Int: stores whole VND amounts, never floating-point prices.
-images String[]: stores image URLs or storage paths. PostgreSQL supports scalar lists in Prisma. 
-deletedAt: a non-null timestamp means the record is soft-deleted.
-DRAFT: products are not publicly visible until published.
-slug @unique: prevents duplicate URLs, including URLs belonging to soft-deleted records.
-*/
+model Cart {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  cartId    String
+  productId String
+  quantity  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([cartId, productId])
+  @@index([productId])
+  @@map("cart_items")
+}
+
+/**
+ * price Int: stores whole VND amounts, never floating-point prices.
+ * images String[]: stores image URLs or storage paths. PostgreSQL supports scalar lists in Prisma.
+ * deletedAt: a non-null timestamp means the record is soft-deleted.
+ * DRAFT: products are not publicly visible until published.
+ * slug @unique: prevents duplicate URLs, including URLs belonging to soft-deleted records.
+ */
+
+model Order {
+  id          String      @id @default(cuid())
+  userId      String
+  status      OrderStatus @default(PENDING_PAYMENT)
+  currency    String      @default("VND")
+  totalAmount BigInt      @map("total_amount")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  user                 User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items                OrderItem[]
+  statusHistory        OrderStatusHistory[]
+  paymentIntent        PaymentIntent?
+  correlationId        String?              @map("correlation_id") @db.VarChar(100)
+  flashSaleReservation Reservation?
+
+  @@index([userId, createdAt, id])
+  @@index([correlationId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String @id @default(cuid())
+  orderId     String @map("order_id")
+  productId   String @map("product_id")
+  productName String @map("product_name")
+  unitPrice   Int    @map("unit_price")
+  quantity    Int
+  lineTotal   BigInt @map("line_total")
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([productId])
+  @@map("order_items")
+}
+
+model Inventory {
+  id        String   @id @default(uuid())
+  productId String   @unique @map("product_id")
+  quantity  Int      @default(0)
+  version   Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  product   Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  movements InventoryMovement[]
+
+  @@map("inventory")
+}
+
+model InventoryMovement {
+  id            String                @id @default(uuid())
+  inventoryId   String                @map("inventory_id")
+  type          InventoryMovementType
+  quantityDelta Int                   @map("quantity_delta")
+  reason        String
+  actorId       String?               @map("actor_id")
+  actorType     AuditActorType        @default(USER) @map("actor_type")
+  createdAt     DateTime              @default(now()) @map("created_at")
+
+  inventory Inventory @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
+  actor     User?     @relation("InventoryMovementActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([inventoryId, createdAt])
+  @@index([actorId])
+  @@map("inventory_movements")
+}
+
+model OrderStatusHistory {
+  id         String         @id @default(cuid())
+  orderId    String         @map("order_id")
+  fromStatus OrderStatus?   @map("from_status")
+  toStatus   OrderStatus    @map("to_status")
+  actorId    String?        @map("actor_id")
+  actorType  AuditActorType @default(USER) @map("actor_type")
+  reason     String         @db.VarChar(500)
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User? @relation("OrderStatusHistoryActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+  @@index([actorId, createdAt])
+  @@map("order_status_history")
+}
+
+model IdempotencyRecord {
+  id             String            @id @default(cuid())
+  userId         String            @map("user_id")
+  scope          String            @db.VarChar(200)
+  key            String            @db.VarChar(255)
+  requestHash    String            @map("request_hash")
+  status         IdempotencyStatus @default(IN_PROGRESS)
+  responseStatus Int?              @map("response_status")
+  responseBody   Json?             @map("response_body")
+  expiresAt      DateTime          @map("expires_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, scope, key])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
+model PaymentIntent {
+  id                String              @id @default(cuid())
+  orderId           String              @unique @map("order_id")
+  providerReference String              @unique @map("provider_reference")
+  amount            BigInt
+  currency          String              @default("VND")
+  status            PaymentIntentStatus @default(PENDING)
+  checkoutUrl       String              @map("checkout_url")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+
+  order         Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  webhookEvents WebhookEvent[]
+
+  @@map("payment_intents")
+}
+
+model WebhookEvent {
+  id              String              @id @default(cuid())
+  eventId         String              @unique @map("event_id")
+  paymentIntentId String?             @map("payment_intent_id")
+  eventType       String              @map("event_type") @db.VarChar(100)
+  payloadHash     String              @map("payload_hash") @db.VarChar(64)
+  payload         Json
+  outcome         WebhookEventOutcome @default(RECEIVED)
+  receivedAt      DateTime            @default(now()) @map("received_at")
+  processedAt     DateTime?           @map("processed_at")
+
+  paymentIntent PaymentIntent? @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
+
+  @@index([paymentIntentId, receivedAt])
+  @@index([outcome, receivedAt])
+  @@map("webhook_events")
+}
+
+enum FlashSaleCampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ENDED
+
+  @@map("flash_sale_campaign_status")
+}
+
+enum ReservationStatus {
+  PROVISIONAL
+  ACTIVE
+  CONFIRMED
+  RELEASED
+  EXPIRED
+
+  @@map("flash_sale_reservation_status")
+}
+
+model FlashSaleCampaign {
+  id           String                  @id @default(cuid())
+  name         String                  @db.VarChar(200)
+  status       FlashSaleCampaignStatus @default(DRAFT)
+  startsAt     DateTime                @map("starts_at")
+  endsAt       DateTime                @map("ends_at")
+  perUserLimit Int                     @map("per_user_limit")
+  createdAt    DateTime                @default(now()) @map("created_at")
+  updatedAt    DateTime                @updatedAt @map("updated_at")
+
+  stocks       FlashSaleStock[]
+  reservations Reservation[]
+  quotas       FlashSaleUserQuota[]
+
+  @@index([status, startsAt, endsAt])
+  @@map("flash_sale_campaigns")
+}
+
+model FlashSaleStock {
+  id         String   @id @default(cuid())
+  campaignId String   @map("campaign_id")
+  productId  String   @map("product_id")
+  allocated  Int
+  available  Int
+  reserved   Int      @default(0)
+  sold       Int      @default(0)
+  version    Int      @default(0)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  campaign FlashSaleCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  product  Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignId, productId])
+  @@index([productId])
+  @@map("flash_sale_stocks")
+}
+
+model FlashSaleUserQuota {
+  id                String   @id @default(cuid())
+  campaignId        String   @map("campaign_id")
+  userId            String   @map("user_id")
+  activeQuantity    Int      @default(0) @map("active_quantity")
+  purchasedQuantity Int      @default(0) @map("purchased_quantity")
+  version           Int      @default(0)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  campaign FlashSaleCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  user     User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignId, userId])
+  @@map("flash_sale_user_quotas")
+}
+
+model Reservation {
+  id             String            @id
+  campaignId     String            @map("campaign_id")
+  userId         String            @map("user_id")
+  orderId        String            @unique @map("order_id")
+  status         ReservationStatus @default(ACTIVE)
+  idempotencyKey String            @map("idempotency_key") @db.VarChar(255)
+  requestHash    String            @map("request_hash") @db.VarChar(64)
+  expiresAt      DateTime          @map("expires_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  campaign FlashSaleCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  user     User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order    Order             @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  items    ReservationItem[]
+
+  @@index([status, expiresAt])
+  @@index([campaignId, createdAt])
+  @@map("flash_sale_reservations")
+}
+
+model ReservationItem {
+  id            String @id @default(cuid())
+  reservationId String @map("reservation_id")
+  productId     String @map("product_id")
+  productName   String @map("product_name") @db.VarChar(200)
+  unitPrice     Int    @map("unit_price")
+  quantity      Int
+
+  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([reservationId, productId])
+  @@map("flash_sale_reservation_items")
+}
+
+model OutboxEvent {
+  id          String    @id @default(cuid())
+  type        String    @db.VarChar(100)
+  aggregateId String    @map("aggregate_id") @db.VarChar(200)
+  payload     Json
+  availableAt DateTime  @default(now()) @map("available_at")
+  attempts    Int       @default(0)
+  lockedAt    DateTime? @map("locked_at")
+  deliveredAt DateTime? @map("delivered_at")
+  lastError   String?   @map("last_error") @db.VarChar(2000)
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([deliveredAt, availableAt])
+  @@index([type, createdAt])
+  @@map("outbox_events")
+}

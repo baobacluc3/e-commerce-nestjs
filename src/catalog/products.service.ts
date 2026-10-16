@@ -181,31 +181,6 @@ export class ProductsService {
     return product;
   }
 
-  async findAllAdmin(page = 1, limit = 20) {
-    const where = { deletedAt: null };
-
-    const [data, total] = await this.prisma.$transaction([
-      this.prisma.product.findMany({
-        where,
-        select: productSelect,
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.product.count({ where }),
-    ]);
-
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
-  }
-
   async update(id: string, dto: UpdateProductDto) {
     const existing = await this.prisma.product.findFirst({
       where: { id, deletedAt: null },
@@ -281,10 +256,6 @@ export class ProductsService {
       PRODUCT_LIST_TTL_SECONDS,
       () => this.search(query, true),
     );
-  }
-
-  async searchAdmin(query: ProductSearchDto) {
-    return this.search(query, false);
   }
 
   private async search(query: ProductSearchDto, publicOnly: boolean) {
@@ -586,7 +557,7 @@ export class ProductsService {
           // Only the lock owner loads the database.
           const value = await loader();
 
-          // Avoid caching stale data if an admin changed the
+          // Avoid caching stale data if a product changed while
           // product while the database query was running.
           try {
             const currentVersion =
